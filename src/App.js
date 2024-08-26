@@ -1,26 +1,22 @@
-import React, { useState } from 'react';
-import { Form, Button } from 'react-bootstrap';
-import Web3 from 'web3';
+import React, {useState} from 'react';
+import {Form, Button} from 'react-bootstrap';
+import {ethers} from 'ethers';
 import DisperseContract from './abi/Disperse.json';
-import TokenABI from './abi/Token.json';
-import {MaxUint256} from "ethers";
-
-const contractAddress = process.env.CONTRACT;
 
 const App = () => {
   const [tokenAddress, setTokenAddress] = useState('');
   const [recipients, setRecipients] = useState('');
-  const [values, setValues] = useState('');
   const [connectedAccount, setConnectedAccount] = useState('');
-  const [web3, setWeb3] = useState(null);
+  const [ethSigner, setEthSigner] = useState(null);
 
   const connectWallet = async () => {
     if (window.ethereum) {
       try {
-        await window.ethereum.enable();
-        const web3Instance = new Web3(window.ethereum);
-        setWeb3(web3Instance);
-        const accounts = await web3Instance.eth.getAccounts();
+        await window.ethereum.request({method: 'eth_requestAccounts'});
+        const provider = new ethers.providers.Web3Provider(window.ethereum);
+        const signer = provider.getSigner();
+        setEthSigner(signer);
+        const accounts = await provider.send('eth_accounts');
         setConnectedAccount(accounts[0]);
       } catch (error) {
         console.error('Error connecting wallet:', error);
@@ -31,40 +27,46 @@ const App = () => {
     }
   };
 
+  function getContract(address) {
+    const provider = new ethers.providers.Web3Provider(window.ethereum);
+    const signer = provider.getSigner();
+    return new ethers.Contract(address, DisperseContract.abi, signer);
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!web3) {
+    const contractAddress = process.env.DISPERSE_CONTRACT;
+    if (!ethSigner) {
       alert('Please connect your wallet first.');
       return;
     }
-
+    console.log(contractAddress)
     // Create the contract instance
-    const contract = new web3.eth.Contract(DisperseContract.abi, contractAddress);
+    const contract = getContract(contractAddress)
 
-    // Convert string addresses to array
-    const recipientsArray = recipients.split(',').map(address => address.trim());
 
-    // Convert string values to array of big numbers
-    const valuesArray = values.split(',').map(value => web3.utils.toWei(value.trim(), 'ether'));
+    // Convert CSV-like string to array of objects
+    const parsedRecipients = recipients.trim().split('\n').map(line => {
+      const [address, value] = line.split(',').map(item => item.trim());
+      return {address, value: ethers.utils.parseEther(value)};
+    });
+
+    const recipientsArray = parsedRecipients.map(r => r.address);
+    const valuesArray = parsedRecipients.map(r => r.value);
 
     try {
-      // Get token instance
-      const tokenInstance = new web3.eth.Contract(TokenABI.abi, tokenAddress);
-
-      // Approve spending tokens by the contract
-      await tokenInstance.methods.approve(contractAddress, MaxUint256).send({ from: connectedAccount });
-
       // Call the disperseToken function on the contract
-      const accounts = await web3.eth.getAccounts();
-      await contract.methods.disperseToken(tokenAddress, recipientsArray, valuesArray).send({ from: accounts[0] });
+      // const accounts = await ethSigner.send('eth_accounts');
+      const disperseToken = await contract.disperseToken(tokenAddress, recipientsArray, valuesArray);
+      disperseToken.wait()
+      console.log(disperseToken.hash);
       alert('Tokens dispersed successfully!');
     } catch (error) {
       console.error('Error dispersing tokens:', error);
       alert('An error occurred while dispersing tokens.');
     }
   };
-
 
   return (
     <div>
@@ -76,15 +78,14 @@ const App = () => {
       <Form onSubmit={handleSubmit}>
         <Form.Group controlId="tokenAddress">
           <Form.Label>Token Address</Form.Label>
-          <Form.Control type="text" placeholder="Enter token address" value={tokenAddress} onChange={(e) => setTokenAddress(e.target.value)} />
+          <Form.Control type="text" placeholder="Enter token address" value={tokenAddress}
+                        onChange={(e) => setTokenAddress(e.target.value)}/>
         </Form.Group>
         <Form.Group controlId="recipients">
-          <Form.Label>Recipients</Form.Label>
-          <Form.Control type="text" placeholder="Enter recipient addresses (comma-separated)" value={recipients} onChange={(e) => setRecipients(e.target.value)} />
-        </Form.Group>
-        <Form.Group controlId="values">
-          <Form.Label>Values</Form.Label>
-          <Form.Control type="text" placeholder="Enter token values (comma-separated)" value={values} onChange={(e) => setValues(e.target.value)} />
+          <Form.Label>Recipients and Values (CSV format: address,value)</Form.Label>
+          <Form.Control as="textarea" rows={5}
+                        placeholder="Enter recipient addresses and values (CSV format: address,value)"
+                        value={recipients} onChange={(e) => setRecipients(e.target.value)}/>
         </Form.Group>
         <Button variant="primary" type="submit">Disperse Tokens</Button>
       </Form>
